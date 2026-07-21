@@ -109,7 +109,9 @@ Multiple backends can be configured simultaneously — they are automatically co
 are ordered from lowest/nearest to highest/authoritative. Reads check each tier in order and backfill lower tiers on a
 hit. Writes go to all tiers in parallel. Replica invalidations evict only non-authoritative tiers; the final cache block
 is authoritative. Tiered caches use the metadata backend to track authoritative ETags and invalidate stale lower-tier
-copies before falling through to the authoritative tier.
+copies before falling through to the authoritative tier. See [docs/tiering.md](docs/tiering.md) for a full explanation
+of the tiering semantics, and [docs/architecture.md](docs/architecture.md) for how requests flow through strategies to
+the cache.
 
 ### Memory
 
