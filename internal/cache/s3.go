@@ -193,12 +193,16 @@ func (s *S3) statAndHeaders(ctx context.Context, key Key) (minio.ObjectInfo, htt
 		return minio.ObjectInfo{}, nil, s3Meta{}, err
 	}
 
-	// Reject metadata that describes a different data object than the one
-	// stored (e.g. interleaved concurrent writes to the same key, or a data
-	// object whose companion has not been written yet). Treating this as a
-	// miss lets the caller fall back to upstream; the next write reconciles.
+	// A companion that describes a different data object than the one stored
+	// (interleaved concurrent writes to the same key, or a data object whose
+	// companion has not been written yet) is stale, but the data object is
+	// self-describing: its immutable headers travel in its own user metadata.
+	// Serve it with those and its own expiry rather than reporting a miss,
+	// since the commit is two sequential writes and every rewrite of a hot
+	// key would otherwise open a miss window. The next expiry refresh or
+	// write reconciles the companion.
 	if objInfo.UserMetadata[s3TagMetadataKey] != meta.Tag {
-		return minio.ObjectInfo{}, nil, s3Meta{}, os.ErrNotExist
+		meta = s3Meta{ExpiresAt: objInfo.Expires, Tag: objInfo.UserMetadata[s3TagMetadataKey]}
 	}
 
 	maps.Copy(headers, meta.Headers)

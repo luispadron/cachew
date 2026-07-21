@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 	"log/slog"
-	"os"
 	"testing"
 	"time"
 
@@ -35,11 +34,12 @@ func newS3(t *testing.T) *S3 {
 	return s
 }
 
-// TestS3TagMismatchIsMiss verifies that when the companion metadata object
-// describes a different data object than the one stored (the outcome of
-// interleaved concurrent writes to the same key), reads report a cache miss
-// rather than serving the data with mismatched metadata.
-func TestS3TagMismatchIsMiss(t *testing.T) {
+// TestS3StaleCompanionFallsBackToObjectMetadata verifies that when the
+// companion metadata object describes a different data object than the one
+// stored (interleaved concurrent writes, or a companion not yet written),
+// reads serve the data object with its own embedded metadata instead of
+// reporting a miss.
+func TestS3StaleCompanionFallsBackToObjectMetadata(t *testing.T) {
 	s := newS3(t)
 	defer s.Close()
 
@@ -52,12 +52,14 @@ func TestS3TagMismatchIsMiss(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NoError(t, w.Close())
 
-	r, _, err := s.Open(ctx, key)
+	r, headers, err := s.Open(ctx, key)
 	assert.NoError(t, err)
 	data, err := io.ReadAll(r)
 	assert.NoError(t, err)
 	assert.NoError(t, r.Close())
 	assert.Equal(t, "hello world", string(data))
+	wantETag := headers.Get(ETagKey)
+	assert.NotEqual(t, "", wantETag)
 
 	// Simulate a stale companion left behind by an interleaved writer: the data
 	// object keeps its tag while the metadata is overwritten with a different
@@ -67,10 +69,29 @@ func TestS3TagMismatchIsMiss(t *testing.T) {
 		ExpiresAt: time.Now().Add(time.Hour),
 	}))
 
-	_, err = s.Stat(ctx, key)
-	assert.IsError(t, err, os.ErrNotExist)
-	_, _, err = s.Open(ctx, key)
-	assert.IsError(t, err, os.ErrNotExist)
+	headers, err = s.Stat(ctx, key)
+	assert.NoError(t, err)
+	assert.Equal(t, wantETag, headers.Get(ETagKey))
+
+	r, headers, err = s.Open(ctx, key)
+	assert.NoError(t, err)
+	data, err = io.ReadAll(r)
+	assert.NoError(t, err)
+	assert.NoError(t, r.Close())
+	assert.Equal(t, "hello world", string(data))
+	assert.Equal(t, wantETag, headers.Get(ETagKey))
+
+	// A tagged data object with no companion at all: the window between the
+	// data commit and the companion write.
+	assert.NoError(t, s.client.RemoveObject(ctx, s.config.Bucket, s.metaPath(s.namespace, key), minio.RemoveObjectOptions{}))
+
+	r, headers, err = s.Open(ctx, key)
+	assert.NoError(t, err)
+	data, err = io.ReadAll(r)
+	assert.NoError(t, err)
+	assert.NoError(t, r.Close())
+	assert.Equal(t, "hello world", string(data))
+	assert.Equal(t, wantETag, headers.Get(ETagKey))
 }
 
 // TestS3LegacyUntaggedObjectIsReadable verifies backwards compatibility: an
